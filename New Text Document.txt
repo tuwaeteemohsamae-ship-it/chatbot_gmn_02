@@ -1,0 +1,10 @@
+# ไฟล์ .env
+
+# โทเค็นการเข้าถึงเพจ Facebook (เปลี่ยน YOUR_PAGE_ACCESS_TOKEN เป็นค่าจริงของคุณ)
+PAGE_ACCESS_TOKEN=EAAdpnrP0xPUBPpFvZAp8VRb1OrdBx8V1c48c6h5XqpM87nF5v7bopnkYCVIOgO64uTbEYnor9tJJwFIZAzCgJgGZBPjn7lANZBQIYOKO4VTVLYl7SsvuuKAvVwv4tfYwvV1QmbjvWY7KjElCBgui5zOUWVNplxyhESqtwHTsjav4Qc24ZC3gPPh3znIbKXGrE2bQyleUZD
+
+# โทเค็นสำหรับยืนยัน Webhook (สามารถตั้งเป็นค่าใดก็ได้ แต่ต้องตรงกับที่ตั้งค่าใน Facebook Developer)
+VERIFY_TOKEN=chatbot02_S_key
+
+# Port ที่ใช้รันเซิร์ฟเวอร์
+PORT=3000
