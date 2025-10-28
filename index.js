@@ -1,10 +1,14 @@
+// index.js
+
 // โหลดตัวแปรสภาพแวดล้อมจากไฟล์ .env
 require('dotenv').config();
 
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
-const { GoogleGenAI } = require('@google/genai'); 
+// นำเข้า Handlers ที่แยกไฟล์
+const { getStaticAnswer } = require('./qa_handler'); 
+const { initializeGemini, getAIResponse } = require('./gemini_chat'); 
 
 // -------------------------------------------------------------------
 // ดึงค่าคงที่จาก .env
@@ -15,27 +19,18 @@ const PORT = process.env.PORT || 3000;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY; 
 
 // -------------------------------------------------------------------
-// ตั้งค่า Gemini Client และ Model
+// ตั้งค่า Gemini Client
 // -------------------------------------------------------------------
 if (!GEMINI_API_KEY) {
     console.error("FATAL ERROR: GEMINI_API_KEY is not set in .env file.");
     process.exit(1);
 }
-const ai = new GoogleGenAI(GEMINI_API_KEY);
-const GEMINI_MODEL = 'gemini-2.5-flash'; 
+initializeGemini(GEMINI_API_KEY); 
 
 const app = express();
 
-// ใช้ body-parser สำหรับการประมวลผล JSON
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
-
-// ====================================================
-// 1. Endpoint สำหรับ Health Check (GET /)
-// ====================================================
-app.get('/', (req, res) => {
-    res.send('Chatbot server is running and ready for webhook verification!');
-});
 
 // ====================================================
 // 2. Endpoint สำหรับ Webhook Verification (GET /webhook)
@@ -50,11 +45,10 @@ app.get('/webhook', (req, res) => {
             console.log('WEBHOOK_VERIFIED');
             res.status(200).send(challenge);
         } else {
-            // โทเค็นไม่ถูกต้อง
             res.sendStatus(403);
         }
     } else {
-        res.sendStatus(400); // Bad Request
+        res.sendStatus(400); 
     }
 });
 
@@ -66,7 +60,6 @@ app.post('/webhook', (req, res) => {
 
     if (body.object === 'page') {
         body.entry.forEach(function(entry) {
-            // ตรวจสอบว่ามีข้อมูลการรับส่งข้อความหรือไม่
             if (entry.messaging) {
                  entry.messaging.forEach(function(webhook_event) {
                     const sender_psid = webhook_event.sender.id;
@@ -74,12 +67,10 @@ app.post('/webhook', (req, res) => {
                     if (webhook_event.message) {
                         handleMessage(sender_psid, webhook_event.message);
                     } 
-                    // คุณสามารถเพิ่มการจัดการ postbacks, optins ฯลฯ ได้ที่นี่
                 });
             }
         });
 
-        // ต้องส่งสถานะ 200 กลับไปโดยเร็วที่สุด
         res.status(200).send('EVENT_RECEIVED');
     } else {
         res.sendStatus(404);
@@ -87,46 +78,31 @@ app.post('/webhook', (req, res) => {
 });
 
 // ====================================================
-// 4. ฟังก์ชันจัดการข้อความ (Logic)
+// 4. ฟังก์ชันจัดการข้อความ (Hybrid Logic)
 // ====================================================
 async function handleMessage(sender_psid, received_message) {
     let response;
     
-    // ตรวจสอบว่าเป็นข้อความตัวอักษรและไม่ใช่ echo
     if (received_message.text && !received_message.is_echo) {
         const userText = received_message.text;
-        console.log(`Sender PSID: ${sender_psid}, User message: ${userText}`);
 
-        // ตรวจสอบคำทักทายเริ่มต้นตามโจทย์ (ตอบกลับแบบรวดเร็ว)
-        const textLower = userText.toLowerCase().trim();
+        // 1. ตรวจสอบจาก Static Q&A (Non-AI) ก่อน
+        const staticAnswer = getStaticAnswer(userText);
 
-        if (textLower === 'สวัสดีครับ' || textLower === 'สวัสดี') {
-            response = {
-                'text': `สวัสดีเช่นกันครับ! ยินดีที่ได้รู้จักครับ 😊 (Chatbot ตอบเอง)`
-            };
-            callSendAPI(sender_psid, response);
-            return; // หยุดทำงานหลังตอบกลับรวดเร็ว
-        }
-
-        // หากไม่ใช่คำทักทายเริ่มต้น ให้ส่งไปให้ Gemini
-        try {
-            const result = await ai.models.generateContent({
-                model: GEMINI_MODEL,
-                contents: userText,
-            });
-
-            const geminiResponse = result.text.trim();
-            console.log(`Gemini response: ${geminiResponse}`);
-
-            response = {
-                'text': geminiResponse
-            };
-
-        } catch (error) {
-            console.error('Error calling Gemini API:', error.message);
-            response = {
-                'text': 'ขออภัยครับ เกิดข้อผิดพลาดในการเชื่อมต่อกับ AI หรือ API Key ไม่ถูกต้อง'
-            };
+        if (staticAnswer) {
+            // Static Response
+            console.log(`Response from: Static QA for PSID: ${sender_psid}`);
+            response = { 'text': staticAnswer };
+        } else {
+            // 2. ถ้าไม่พบ ให้ส่งไปให้ Gemini AI (พร้อม History)
+            console.log(`Response from: Gemini AI for PSID: ${sender_psid}`);
+            try {
+                const aiResponse = await getAIResponse(sender_psid, userText);
+                response = { 'text': aiResponse };
+            } catch (error) {
+                console.error("Failed to get AI response:", error.message);
+                response = { 'text': 'ขออภัยครับ เกิดข้อผิดพลาดในการเชื่อมต่อกับ AI หรือ API Key ไม่ถูกต้อง' };
+            }
         }
     } else {
         // จัดการกรณีเป็น Sticker, รูปภาพ ฯลฯ
@@ -135,7 +111,6 @@ async function handleMessage(sender_psid, received_message) {
         };
     }
     
-    // ส่งข้อความตอบกลับ
     callSendAPI(sender_psid, response);
 }
 
@@ -143,22 +118,16 @@ async function handleMessage(sender_psid, received_message) {
 // 5. ฟังก์ชันส่งข้อความกลับไปยัง Facebook (API)
 // ====================================================
 function callSendAPI(sender_psid, response) {
-    // สร้าง request body
     const request_body = {
         'recipient': { 'id': sender_psid },
         'message': response,
         'messaging_type': 'RESPONSE' 
     };
 
-    // ใช้ axios ส่ง POST Request ไปยัง Messenger Platform
     axios.post('https://graph.facebook.com/v18.0/me/messages', request_body, {
         params: { 'access_token': PAGE_ACCESS_TOKEN }
     })
-    .then(() => {
-        // console.log('Message sent successfully!');
-    })
     .catch(error => {
-        // Log ข้อผิดพลาดจาก Facebook API
         console.error('Unable to send message. Facebook API Error:', 
                       error.response ? error.response.data : error.message);
     });
